@@ -45,7 +45,6 @@ class Metrics(BaseMetrics):
     suffix_tokens: int = 0
     cut_offset: int = 0
     suffix_overlap_ratio: float = 0.0
-    skipped: bool = False
 
 
 def remove_reasoning(completion: str, reasoning_delimiters: list[str] | None = None) -> str:
@@ -99,15 +98,16 @@ async def generate_latent_thought_rollout(
 
     lt_cfg = cfg.get("latent_thought", {}) or {}
     max_total_tokens: int = int(lt_cfg.get("max_total_tokens", 16384))
-    min_side_tokens: int = int(lt_cfg.get("min_side_tokens", 64))
+    # Filtering happens once at dataset construction time (loader's
+    # min_side_chars / max_total_chars). Once a problem reaches this rollout we
+    # always emit one training_text — skipping here would desync the preprocessor's
+    # group-size invariant (every rollout in a group of `attempts` must contribute
+    # a sample with a rollout_index).
 
     # ----- 1. Pick a cut online ---------------------------------------------
-    cut_offsets = problem.get("cut_offsets") or []
+    cut_offsets = list(problem.get("cut_offsets") or [])
     text = problem["text"]
-    if not cut_offsets:
-        # Loader should have filtered these out, but be defensive.
-        return _make_skip_result(latency=time.time() - time_start, dataset=problem.get("dataset"))
-    cut = random.choice(list(cut_offsets))
+    cut = random.choice(cut_offsets) if cut_offsets else max(1, len(text) // 2)
     prefix_text = text[:cut]
     suffix_text = text[cut:]
 
@@ -121,14 +121,14 @@ async def generate_latent_thought_rollout(
     if len(prefix_ids) + len(suffix_ids) > max_total_tokens:
         prefix_ids, suffix_ids = _truncate_to_fit(prefix_ids, suffix_ids, max_total_tokens)
 
-    if len(prefix_ids) < min_side_tokens or len(suffix_ids) < min_side_tokens:
-        return _make_skip_result(
-            latency=time.time() - time_start,
-            dataset=problem.get("dataset"),
-            cut_offset=cut,
-            prefix_tokens=len(prefix_ids),
-            suffix_tokens=len(suffix_ids),
-        )
+    # Defensive: if either side is empty after tokenization (extremely short
+    # text or aggressive truncation), pad with a single special token so the
+    # evaluator call is well-formed. Reward will be near zero on these edge
+    # cases, but we still emit a training_text.
+    if len(prefix_ids) == 0:
+        prefix_ids = [eval_tokenizer.bos_token_id or eval_tokenizer.eos_token_id]
+    if len(suffix_ids) == 0:
+        suffix_ids = [eval_tokenizer.eos_token_id]
 
     # Re-derive text from token ids in case we truncated; the policy sees the
     # same text the evaluator will score over.
@@ -221,7 +221,6 @@ async def generate_latent_thought_rollout(
         suffix_tokens=len(suffix_ids),
         cut_offset=int(cut),
         suffix_overlap_ratio=overlap_ratio,
-        skipped=False,
     )
 
     return RolloutResult(
@@ -229,33 +228,4 @@ async def generate_latent_thought_rollout(
         metrics=metrics,
         latency=time.time() - time_start,
         dataset_name=problem.get("dataset"),
-    )
-
-
-def _make_skip_result(
-    latency: float,
-    dataset: str | None = None,
-    cut_offset: int = 0,
-    prefix_tokens: int = 0,
-    suffix_tokens: int = 0,
-) -> RolloutResult:
-    """Return a zero-reward result when the row cannot be processed.
-
-    The dispatcher requires `attempts` results per group; we return a placeholder
-    rather than raising so the group still completes.
-    """
-    return RolloutResult(
-        training_texts=[],
-        metrics=Metrics(
-            reward=0.0,
-            success=False,
-            no_error=True,
-            no_answer=True,
-            cut_offset=cut_offset,
-            prefix_tokens=prefix_tokens,
-            suffix_tokens=suffix_tokens,
-            skipped=True,
-        ),
-        latency=latency,
-        dataset_name=dataset,
     )
