@@ -33,7 +33,7 @@ finetune:
   save_checkpoint_steps: 50
   push_to_hub: true
   hub_model_id: lm-provers/QED-Nano-v1.6-dev
-  hub_model_revision: aicsi-rl-v00.00
+  hub_model_revision: aicsi-rl-v00.03
   hub_ignore_patterns:
     - "*.pt"
     - "*.pth"
