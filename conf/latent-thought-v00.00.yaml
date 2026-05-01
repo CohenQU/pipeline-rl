@@ -94,7 +94,6 @@ actor:
 # Domain-specific knobs read by generate_latent_thought_rollout.
 latent_thought:
     max_total_tokens: 16384   # prefix+aux+suffix budget for the evaluator
-    min_side_tokens: 64       # skip rollouts where prefix or suffix falls below this
 
 dataset_loader: pipelinerl.domains.latent_thought.load_datasets
 dataset_loader_params:
@@ -127,21 +126,34 @@ vllm_config:
         pipeline-parallel-size: 1
         generation-config: vllm
 
-# vLLM config used for the frozen evaluator. Sized to the latent_thought token
-# budget: max-model-len matches latent_thought.max_total_tokens, and chunked
-# prefill is enabled so max-num-batched-tokens can stay tight without violating
-# vllm's "max_num_batched_tokens >= max_model_len" check (which the actor
-# avoids the same way).
+# vLLM config used for the frozen evaluator (scoring only — no generation).
+#
+# Memory pressure comes from prompt_logprobs (echo=True): vLLM's sampler
+# allocates a (chunk_len, vocab_size) float tensor inside _get_ranks for
+# every prefill step (~10 GB at 16k tokens × 152k vocab in bf16).
+#
+# To keep that bounded — without lowering the legitimate prefix+aux+suffix
+# budget — we reduce the prefill *chunk* size and concurrency:
+#   - max-num-batched-tokens=4096 with enable-chunked-prefill caps the chunk
+#     size, so peak sampler activation per chunk is ~2.5 GB. A 16k prompt is
+#     scored in 4 chunks; for scoring-only there's no decode step that needs
+#     the full budget in a single forward pass.
+#   - max-num-seqs=2 caps concurrent requests on each evaluator.
+#   - enforce-eager disables CUDA graph capture (~2-5 GB headroom).
+#   - gpu-memory-utilization=0.7 leaves more room outside KV cache.
+# Throughput is modest; stability is the priority for v0.
 evaluator_vllm_config:
     use_v1: false
     vllm_kwargs:
         dtype: bfloat16
-        gpu-memory-utilization: 0.9
+        gpu-memory-utilization: 0.7
+        enforce-eager: ""
         num-scheduler-steps: 1
         disable-log-requests: ""
         disable-frontend-multiprocessing: ""
-        max-num-seqs: 64
-        max-num-batched-tokens: 16384
+        max-num-seqs: 2
+        max-logprobs: 1
+        max-num-batched-tokens: 4096
         max-model-len: 16384
         enable-chunked-prefill: ""
         return-tokens-as-token-ids: ""
