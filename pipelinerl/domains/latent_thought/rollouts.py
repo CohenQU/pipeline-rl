@@ -2,21 +2,43 @@
 Rollout function for the latent_thought domain.
 
 Given (prefix, suffix) sliced from a raw text row, the policy generates an
-auxiliary string `aux`. A frozen evaluator vLLM scores both the baseline
-continuation `suffix | prefix` and the treatment continuation
-`(aux ⊕ suffix) | prefix`. Reward is the difference of average per-token NLL.
+auxiliary string `aux`. A frozen evaluator vLLM scores three quantities:
+  - baseline:    `suffix | prefix`            (no aux conditioning)
+  - treatment:   `(aux ⊕ suffix) | prefix`    (joint scoring, length-diluted)
+  - conditional: `suffix | prefix, aux`       (suffix-only, aux as context)
 
-Reward:
-  avg_NLL_baseline  = -sum_logprob(suffix | prefix)        / |suffix|
-  avg_NLL_treatment = -sum_logprob(aux⊕suffix | prefix)    / (|aux| + |suffix|)
-  reward            = avg_NLL_baseline - avg_NLL_treatment
+Reward is a hybrid weighted sum of two deltas, optionally docked by a hard
+length penalty when the policy hit its `max_tokens` cap:
 
-A positive reward means the auxiliary text lowered the average per-token NLL
-of the overall continuation under the frozen evaluator.
+  avg_NLL_baseline    = -sum_logprob(suffix | prefix)          / |suffix|
+  avg_NLL_treatment   = -sum_logprob(aux⊕suffix | prefix)      / (|aux| + |suffix|)
+  avg_NLL_conditional = -sum_logprob(suffix | prefix, aux)     / |suffix|
 
-Known v0 limitation: the reward admits an aux=suffix copy degeneracy
-(see /docs/plans/latent-thought-domain.md). suffix_overlap_ratio is logged
-per rollout for monitoring; it is NOT subtracted from the reward in v00.00.
+  suffix_delta = avg_NLL_baseline - avg_NLL_conditional
+  joint_delta  = avg_NLL_baseline - avg_NLL_treatment
+  reward       = α · suffix_delta + β · joint_delta - length_penalty_applied
+
+with the constraint `α + β = 1` (asserted at runtime).
+
+Why hybrid: v00.01 used reward = joint_delta only. That formula admits a
+copy-prefix hack — the model emits long aux that is trivially predictable
+under the evaluator, which inflates the (|aux| + |suffix|) denominator with
+low-NLL tokens and lowers avg_NLL_treatment without making the suffix any
+easier to predict. suffix_delta divides both sides by |suffix|, so it is
+not dilutable and directly measures "did aux help predict the suffix?".
+
+Length penalty: when policy generation finishes due to `max_tokens` (vs.
+natural EOS), `length_penalty` is subtracted from the reward. Detection
+falls back to comparing `llm_call.output_length_tokens` to
+`cfg.llm.parameters.max_tokens` (LLMOutput does not carry finish_reason in
+this stack). Default `length_penalty=0.0` (off); typical comparison value
+is `0.1`.
+
+Backward compatibility: defaults `reward_alpha=0.0, reward_beta=1.0,
+length_penalty=0.0` reproduce the v00.01 reward exactly.
+
+`suffix_overlap_ratio` continues to be logged for monitoring; it is NOT
+subtracted from the reward.
 """
 
 import asyncio
@@ -39,8 +61,16 @@ logger = logging.getLogger(__name__)
 class Metrics(BaseMetrics):
     avg_nll_baseline: float = 0.0
     avg_nll_treatment: float = 0.0
+    avg_nll_conditional: float = 0.0
+    suffix_delta: float = 0.0
+    joint_delta: float = 0.0
     nll_delta: float = 0.0
+    reward_alpha_term: float = 0.0
+    reward_beta_term: float = 0.0
+    length_truncated: bool = False
+    length_penalty_applied: float = 0.0
     aux_tokens: int = 0
+    aux_tokens_pre_trim: int = 0
     prefix_tokens: int = 0
     suffix_tokens: int = 0
     cut_offset: int = 0
@@ -162,6 +192,7 @@ async def generate_latent_thought_rollout(
         aux_text = aux_raw  # fall back to raw output for non-thinking models
 
     aux_ids = eval_tokenizer(aux_text, add_special_tokens=False).input_ids
+    aux_tokens_pre_trim = len(aux_ids)
 
     # ----- 4. Reward via evaluator ------------------------------------------
     # Cap (prefix + aux + suffix) at the same max_total_tokens; trim aux first
@@ -171,8 +202,9 @@ async def generate_latent_thought_rollout(
     if overshoot > 0:
         aux_ids = aux_ids[: max(0, len(aux_ids) - overshoot)]
 
-    # Blocking HTTP calls; offload to threads to keep the asyncio loop responsive.
-    baseline_result, treatment_result = await asyncio.gather(
+    # Three prompt_logprobs calls per rollout. Higher evaluator throughput
+    # pressure than v00.01 — monitor evaluator queue length on first run.
+    baseline_result, treatment_result, conditional_result = await asyncio.gather(
         asyncio.to_thread(
             evaluator_llm.get_batch_logprobs_token_ids,
             [prefix_ids],
@@ -183,15 +215,41 @@ async def generate_latent_thought_rollout(
             [prefix_ids],
             [aux_ids + suffix_ids],
         ),
+        asyncio.to_thread(
+            evaluator_llm.get_batch_logprobs_token_ids,
+            [prefix_ids + aux_ids],
+            [suffix_ids],
+        ),
     )
     sum_lp_baseline = _sum_logprobs(baseline_result[0])
     sum_lp_treatment = _sum_logprobs(treatment_result[0])
+    sum_lp_conditional = _sum_logprobs(conditional_result[0])
 
     n_suffix = max(1, len(suffix_ids))
     n_joint = max(1, len(aux_ids) + len(suffix_ids))
     avg_nll_baseline = -sum_lp_baseline / n_suffix
     avg_nll_treatment = -sum_lp_treatment / n_joint
-    reward = avg_nll_baseline - avg_nll_treatment
+    avg_nll_conditional = -sum_lp_conditional / n_suffix
+
+    suffix_delta = avg_nll_baseline - avg_nll_conditional
+    joint_delta = avg_nll_baseline - avg_nll_treatment
+
+    alpha = float(lt_cfg.get("reward_alpha", 0.0))
+    beta = float(lt_cfg.get("reward_beta", 1.0))
+    assert abs(alpha + beta - 1.0) < 1e-6, (
+        f"latent_thought.reward_alpha + reward_beta must equal 1.0, got {alpha + beta}"
+    )
+    reward = alpha * suffix_delta + beta * joint_delta
+
+    # Hard length penalty when the policy stopped because it hit max_tokens.
+    # LLMOutput in this stack does not carry finish_reason, so detect via
+    # output_length_tokens >= configured cap (math domain uses an analogous
+    # token-count check at pipelinerl/domains/math/rollouts.py:50–56).
+    length_penalty_value = float(lt_cfg.get("length_penalty", 0.0))
+    max_tokens_cap = int(cfg.llm.parameters.max_tokens)
+    length_truncated = bool(llm_call.output_length_tokens >= max_tokens_cap)
+    length_penalty_applied = length_penalty_value if length_truncated else 0.0
+    reward = reward - length_penalty_applied
 
     discount_factor = float(cfg.actor.get("discount_factor", 1.0))
     if discount_factor != 1.0:
@@ -215,8 +273,16 @@ async def generate_latent_thought_rollout(
         no_answer=not bool(aux_text.strip()),
         avg_nll_baseline=float(avg_nll_baseline),
         avg_nll_treatment=float(avg_nll_treatment),
-        nll_delta=float(reward),
+        avg_nll_conditional=float(avg_nll_conditional),
+        suffix_delta=float(suffix_delta),
+        joint_delta=float(joint_delta),
+        nll_delta=float(joint_delta),  # backward-compat alias for v00.01 dashboards
+        reward_alpha_term=float(alpha * suffix_delta),
+        reward_beta_term=float(beta * joint_delta),
+        length_truncated=length_truncated,
+        length_penalty_applied=float(length_penalty_applied),
         aux_tokens=len(aux_ids),
+        aux_tokens_pre_trim=int(aux_tokens_pre_trim),
         prefix_tokens=len(prefix_ids),
         suffix_tokens=len(suffix_ids),
         cut_offset=int(cut),
