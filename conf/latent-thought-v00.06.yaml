@@ -24,6 +24,8 @@ eval_every_n_versions: 12800
 
 preprocess:
     shared_memory_entry_size: 2000000000
+    # Override base.yaml default (64) — see latent-thought-v00.01.yaml.
+    max_ready_samples_per_lead: 256
 
 finetune:
     attempts: 8

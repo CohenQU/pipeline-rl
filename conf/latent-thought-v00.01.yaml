@@ -30,6 +30,14 @@ eval_every_n_versions: 12800
 
 preprocess:
     shared_memory_entry_size: 2000000000
+    # Override base.yaml default (64). With train_batch_size=32 and
+    # gradient_accumulation_passes=32 (1024 samples per global step), the
+    # base default gates the preprocessor at 64 * 8 = 512 samples — one
+    # short of the 1024 needed for the trainer's first step, which deadlocks
+    # the pipeline (seen as a slow startup or NCCL timeout). Setting to 256
+    # gives a 2048-sample gate threshold (~2 steps in flight). See the rc_proof
+    # configs which use the same value.
+    max_ready_samples_per_lead: 256
 
 finetune:
     attempts: 8

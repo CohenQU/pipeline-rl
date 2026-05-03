@@ -39,10 +39,10 @@
 - **Goal**: Test whether the hard length penalty alone (without changing the reward) is enough to suppress the copy-prefix hack.
 - **Config**: `conf/latent-thought-v00.02.yaml` (α=0, β=1, length_penalty=0.1)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.02.sh`
-- **Job ID**: 1595300
-- **Code snapshot**: branch `aicsi` at commit 6fe0f90 + uncommitted reward redesign (rollouts.py)
+- **Job ID**: 1596542 (resubmitted after DEC-004 fix; 1595300 cancelled along with the v00.03 deadlock)
+- **Code snapshot**: branch `aicsi` at commit 975c3dd + uncommitted preprocess fix
 - **Output path**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.02/`
-- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595300.out`
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596542.out`
 
 ## EXP-003: latent-thought-v00.03 (suffix-only reward, no length penalty) — primary smoke run
 - **Date**: 2026-05-02 (submitted)
@@ -51,11 +51,11 @@
 - **Goal**: Replace joint_delta with suffix_delta entirely; expect copy-prefix behavior to disappear because there is no longer a way to inflate the reward via long aux.
 - **Config**: `conf/latent-thought-v00.03.yaml` (α=1, β=0, length_penalty=0)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.03.sh`
-- **Job ID**: 1595298
-- **Code snapshot**: branch `aicsi` at commit 6fe0f90 + uncommitted reward redesign (rollouts.py)
+- **Job ID**: 1596540 (resubmitted after DEC-004 fix; 1595298 cancelled — deadlocked at preprocess gate, see history.md 2026-05-02)
+- **Code snapshot**: branch `aicsi` at commit 975c3dd + uncommitted preprocess fix
 - **Output path**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.03/`
-- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595298.out`
-- **Notes**: Watch first ~50 steps in wandb (project AI-CSI, tag `latent_thought`): `suffix_delta`, `joint_delta`, `aux_tokens`, evaluator queue (3 prompt_logprobs calls per rollout vs 2 in v00.01).
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596540.out`
+- **Notes**: Watch first ~50 steps in wandb (project AI-CSI, tag `latent_thought`): `suffix_delta`, `joint_delta`, `aux_tokens`, evaluator queue (3 prompt_logprobs calls per rollout vs 2 in v00.01). v00.03 v1 (1595298) wasted 4h 24m in deadlock before being killed — see DEC-004 / errors_and_fixes.md.
 
 ## EXP-004: latent-thought-v00.04 (suffix-only reward + length penalty 0.1)
 - **Date**: 2026-05-02 (queued)
@@ -70,10 +70,10 @@
 - **Hypothesis**: HYP-003 (does the joint term reduce gradient noise without reintroducing the hack?)
 - **Config**: `conf/latent-thought-v00.05.yaml` (α=0.5, β=0.5, length_penalty=0)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.05.sh`
-- **Job ID**: 1595299
-- **Code snapshot**: branch `aicsi` at commit 6fe0f90 + uncommitted reward redesign (rollouts.py)
+- **Job ID**: 1596541 (resubmitted after DEC-004 fix; 1595299 cancelled along with the v00.03 deadlock)
+- **Code snapshot**: branch `aicsi` at commit 975c3dd + uncommitted preprocess fix
 - **Output path**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.05/`
-- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595299.out`
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596541.out`
 
 ## EXP-006: latent-thought-v00.06 (50/50 hybrid + length penalty 0.1)
 - **Date**: 2026-05-02 (queued)

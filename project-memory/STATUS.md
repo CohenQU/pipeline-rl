@@ -10,30 +10,41 @@ length_penalty`. Code, configs, and scripts are ready; nothing submitted yet.
 
 ## Waiting On
 
-- **1595298** (PD, QOSGrpNodeLimit): latent-thought-v00.03 (α=1, β=0, lp=0). EXP-003.
-  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.03/`
-  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595298.out`
-- **1595299** (PD, QOSGrpNodeLimit): latent-thought-v00.05 (α=0.5, β=0.5, lp=0). EXP-005.
-  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.05/`
-  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595299.out`
-- **1595300** (PD, QOSGrpNodeLimit): latent-thought-v00.02 (α=0, β=1, lp=0.1). EXP-002.
-  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.02/`
-  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1595300.out`
+Resubmitted after preprocess gate fix (DEC-004 / ERR-001). The earlier batch (1595298/9/300)
+all cancelled because v00.03 deadlocked on the `max_ready_samples_per_lead` race.
 
-Check status: `squeue -j 1595298,1595299,1595300` or `sacct -j <id>`.
+- **1596540** (PD, QOSGrpNodeLimit): latent-thought-v00.03 (α=1, β=0, lp=0). EXP-003.
+  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.03/`
+  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596540.out`
+- **1596541** (PD, QOSGrpNodeLimit): latent-thought-v00.05 (α=0.5, β=0.5, lp=0). EXP-005.
+  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.05/`
+  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596541.out`
+- **1596542** (PD, QOSGrpNodeLimit): latent-thought-v00.02 (α=0, β=1, lp=0.1). EXP-002.
+  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.02/`
+  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1596542.out`
+
+Check status: `squeue -j 1596540,1596541,1596542` or `sacct -j <id>`.
 Wandb: project `AI-CSI`, tag `latent_thought`. Watch `suffix_delta`, `joint_delta`,
 `aux_tokens`, `length_truncated`, evaluator queue.
 
 ## Pickup Instructions
 
 1. If jobs are still pending, just wait — `QOSGrpNodeLimit` clears as cluster capacity frees up.
-2. Once a job runs, watch wandb for first ~50 steps: `suffix_delta` and `joint_delta`
+2. **Once a job starts, watch the first 5–15 minutes very closely** for ERR-001 recurrence:
+   in `<output_dir>/finetune/log/info_0.log`, "Batch queue is empty" should stop within
+   ~2 minutes; in `<output_dir>/preprocess/info.log`, `published_samples` should reach
+   1024+ before any "Popped N old entries" lines appear. If popping starts AND trainer
+   never gets a batch, the deadlock is back — kill the job (don't wait for the 10-min
+   NCCL timeout), see ERR-001 for further diagnostics.
+3. Once past startup, watch wandb for first ~50 steps: `suffix_delta` and `joint_delta`
    populated and roughly the right sign, `aux_tokens` distribution dropping (no more
    pure copy-prefix behavior in v00.03/05), evaluator queue stable (3 prompt_logprobs
    calls/rollout now, was 2 in v00.01).
-3. v00.04 and v00.06 are NOT submitted yet — user requested only 02/03/05.
-4. Plan: `docs/plans/2026-05-02-latent-thought-reward-redesign.md`. Reward code:
-   `pipelinerl/domains/latent_thought/rollouts.py` (~lines 200–260).
+4. v00.04 and v00.06 are NOT submitted yet — user requested only 02/03/05.
+5. Plan: `docs/plans/2026-05-02-latent-thought-reward-redesign.md`. Reward code:
+   `pipelinerl/domains/latent_thought/rollouts.py` (~lines 200–260). Preprocess gate:
+   `pipelinerl/preprocess.py:551`. Override now in all latent-thought yamls
+   (`max_ready_samples_per_lead: 256`).
 
 ## Next Steps
 
