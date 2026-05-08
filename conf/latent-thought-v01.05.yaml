@@ -197,7 +197,7 @@ wandb:
     wandb_id: null
     wandb_name: null
     wandb_entity_name: null
-    wandb_project_name: AI-CSI
+    wandb_project_name: latent-thought
     wandb_resume: always
     wandb_use_basename: True
     wandb_workspace_root: null
