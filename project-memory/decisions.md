@@ -27,6 +27,20 @@
   - Both soft + hard — overcomplicates for v0.
 - **Reasoning**: Single scalar gives a clean ablation, matches user's framing ("variable control the penalty, default is 0, 0.1 as comparison"). Can layer on a soft ramp later if the hard penalty is too brittle.
 
+## DEC-005: Add aux_delta term to latent_thought reward + collapse 3 evaluator calls back to 2
+- **Date**: 2026-05-08
+- **Context**: Wanted a third reward component that explicitly rewards `log p(aux | prefix)` (aux being plausible/fluent given prefix) alongside the existing `suffix_delta` (informativeness about suffix) and `joint_delta` (length-diluted joint).
+- **Decision**: 
+  - **Reward formula**: `reward = α · suffix_delta + β · joint_delta + γ · aux_delta − length_penalty_applied` with constraint `α + β + γ = 1` (asserted in code).
+  - **aux_delta definition**: `aux_delta = avg_NLL(suffix|prefix) − avg_NLL(aux|prefix)`. Same delta-style scale as the other two; positive when aux is per-token easier to predict from prefix than the suffix is.
+  - **Implementation**: Drop the third (conditional) evaluator call. The treatment call already returns per-token logprobs for every token in `aux ⊕ suffix | prefix`; split into the first |aux| tokens (= `log p(aux | prefix)`) and the last |suffix| tokens (= `log p(suffix | prefix, aux)`, mathematically identical to a separate conditional call). Net effect: 2 evaluator calls per rollout (back to v00.01 cost) AND a new reward component for free.
+  - **Sweep**: New v00.07/08/09 configs, all on top of suffix-only base (β=0): (α=0.9, γ=0.1), (α=0.7, γ=0.3), (α=0.5, γ=0.5).
+- **Alternatives considered**:
+  - Raw `−avg_NLL(aux|prefix)` instead of delta form — simpler but on a different scale (always negative), harder to weight against the other deltas.
+  - Keep the conditional call as a separate evaluator request — 33% more evaluator pressure for zero information gain (same numbers).
+  - Sweep γ on top of the 50/50 hybrid (α=β=0.5) instead of suffix-only — chose suffix-only base because v00.05 hasn't proven itself yet and we want to see the γ effect cleanly.
+- **Reasoning**: The decomposition `log p(aux⊕suffix | prefix) = log p(aux|prefix) + log p(suffix|prefix,aux)` makes the split a free win (treatment logprobs already contain both terms). Having an explicit aux term lets us probe whether a fluency/coherence regularizer helps the suffix-only reward — small γ may stabilize aux generation; large γ likely re-introduces the copy-prefix pathology (counter-balanced by α). All configs preserved by code default `reward_gamma: 0.0`; v00.01–v00.06 still pass the new α+β+γ=1 assert.
+
 ## DEC-004: Override `preprocess.max_ready_samples_per_lead` (64 → 256) in all latent_thought configs
 - **Date**: 2026-05-02
 - **Context**: First v00.03 attempt (Slurm 1595298) deadlocked after ~12 min. Trainer never received its first batch; NCCL collective then timed out at 10 min cascading the job failure. Investigation found preprocessor wrote 544/1024 samples needed for the trainer's first step, then stopped — gated at `published − processed > max_ready_samples_per_lead × num_trainers = 64 × 8 = 512`. With `samples_processed=0` (trainer never started), gate stayed shut. v00.00 had hit this too (8 restarts in its finetune log before lucky resolution). v00.03 was more vulnerable because 3 evaluator calls/rollout (vs 2 in v00.01) slowed the actor enough that the inner loop never published the full 1024 in one pass before the gate triggered.

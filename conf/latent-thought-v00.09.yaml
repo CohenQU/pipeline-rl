@@ -1,10 +1,11 @@
 # ---------------------
 # Config for latent_thought RL training.
 #
-# v00.03: pure suffix-only reward (α=1, β=0). Reward measures the evaluator
-# NLL improvement on SUFFIX given (PREFIX, AUX) vs SUFFIX given PREFIX. Both
-# terms divided by |suffix|, so length-dilution cannot inflate the reward.
-# No length penalty. Cleanest "new" reward design — primary smoke run.
+# v00.09: equal blend of suffix-only reward (α=0.5) and aux fluency
+# regularizer (γ=0.5). Tests the upper end of the γ sweep — at this weight,
+# the fluency term has equal pull as the suffix-prediction term, so we
+# expect the copy-prefix pathology to start re-emerging if it's going to.
+# β = 0; α + β + γ = 1.
 #
 # See docs/plans/2026-05-02-latent-thought-reward-redesign.md
 # ---------------------
@@ -47,7 +48,7 @@ finetune:
     save_checkpoint_steps: 10
     push_to_hub: true
     hub_model_id: lm-provers/QED-Nano-v1.6-dev
-    hub_model_revision: latent-thought-v00.03
+    hub_model_revision: latent-thought-v00.09
     hub_ignore_patterns:
         - "*.pt"
         - "*.pth"
@@ -97,9 +98,9 @@ actor:
 # Domain-specific knobs read by generate_latent_thought_rollout.
 latent_thought:
     max_total_tokens: 16384   # prefix+aux+suffix budget for the evaluator
-    reward_alpha: 1.0         # weight on suffix_delta (avg_NLL(suffix|prefix) - avg_NLL(suffix|prefix,aux))
+    reward_alpha: 0.5         # weight on suffix_delta (avg_NLL(suffix|prefix) - avg_NLL(suffix|prefix,aux))
     reward_beta: 0.0          # weight on joint_delta (avg_NLL(suffix|prefix) - avg_NLL(aux⊕suffix|prefix)); v00.01 reward
-    reward_gamma: 0.0         # weight on aux_delta (avg_NLL(suffix|prefix) - avg_NLL(aux|prefix)); fluency regularizer
+    reward_gamma: 0.5         # weight on aux_delta (avg_NLL(suffix|prefix) - avg_NLL(aux|prefix)); fluency regularizer
     length_penalty: 0.0       # subtracted from reward when policy hits llm.parameters.max_tokens
 
 dataset_loader: pipelinerl.domains.latent_thought.load_datasets
@@ -148,8 +149,8 @@ vllm_config:
 #   - max-num-seqs=2 caps concurrent requests on each evaluator.
 #   - enforce-eager disables CUDA graph capture (~2-5 GB headroom).
 #   - gpu-memory-utilization=0.7 leaves more room outside KV cache.
-# v00.02+ does 3 prompt_logprobs calls per rollout (was 2 in v00.01) — monitor
-# evaluator queue length on the first run.
+# v00.07+ does 2 prompt_logprobs calls per rollout (treatment is split into
+# aux + suffix portions; same as v00.01 cost).
 evaluator_vllm_config:
     use_v1: false
     vllm_kwargs:

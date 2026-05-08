@@ -22,6 +22,12 @@
 - **How to test**: Compare `aux_tokens` distribution and final `suffix_delta` in v00.04 (α=1, β=0, lp=0.1) vs v00.03 (lp=0). If HYP-002 holds, aux_tokens.mean should drop while `suffix_delta` stays comparable.
 - **Evidence so far**: None.
 
+## HYP-004: A small fluency regularizer on aux (γ ≤ 0.1) improves training stability without re-introducing the copy-prefix pathology
+- **Status**: testing (EXP-007, EXP-008, EXP-009)
+- **Reasoning**: Pure suffix-only reward (α=1, v00.03) gives no incentive for aux to be coherent text — it could devolve to evaluator-adversarial gibberish that happens to lower suffix NLL but is uninterpretable. A small γ on `aux_delta = avg_NLL(suffix|prefix) − avg_NLL(aux|prefix)` adds gentle pressure toward fluent aux. At large γ, the most-fluent aux is a copy of the prefix — re-instating the v00.01 hack — so γ has a sweet spot.
+- **How to test**: γ sweep on top of suffix-only base. v00.07 (γ=0.1), v00.08 (γ=0.3), v00.09 (γ=0.5). Compare against v00.03 (γ=0). Watch `aux_delta`, `suffix_delta`, `aux_tokens`, `suffix_overlap_ratio` (proxy for copy-prefix). Predicted: v00.07 close to v00.03 with slightly better aux quality; v00.09 starts showing high aux_delta but lower suffix_delta and growing overlap.
+- **Evidence so far**: None.
+
 ## HYP-003: A 50/50 hybrid produces a smoother training signal than either term alone
 - **Status**: testing (EXP-005, EXP-007)
 - **Reasoning**: `joint_delta` has lower variance because it averages over more tokens, but is hackable. `suffix_delta` is unhackable but only sees |suffix| tokens of signal per rollout. A blend may reduce gradient noise without reintroducing the dilution hack at full strength.

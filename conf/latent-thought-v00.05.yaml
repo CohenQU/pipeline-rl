@@ -100,6 +100,7 @@ latent_thought:
     max_total_tokens: 16384   # prefix+aux+suffix budget for the evaluator
     reward_alpha: 0.5         # weight on suffix_delta (avg_NLL(suffix|prefix) - avg_NLL(suffix|prefix,aux))
     reward_beta: 0.5          # weight on joint_delta (avg_NLL(suffix|prefix) - avg_NLL(aux⊕suffix|prefix)); v00.01 reward
+    reward_gamma: 0.0         # weight on aux_delta (avg_NLL(suffix|prefix) - avg_NLL(aux|prefix)); fluency regularizer
     length_penalty: 0.0       # subtracted from reward when policy hits llm.parameters.max_tokens
 
 dataset_loader: pipelinerl.domains.latent_thought.load_datasets

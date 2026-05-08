@@ -2,23 +2,32 @@
 Rollout function for the latent_thought domain.
 
 Given (prefix, suffix) sliced from a raw text row, the policy generates an
-auxiliary string `aux`. A frozen evaluator vLLM scores three quantities:
-  - baseline:    `suffix | prefix`            (no aux conditioning)
-  - treatment:   `(aux ⊕ suffix) | prefix`    (joint scoring, length-diluted)
-  - conditional: `suffix | prefix, aux`       (suffix-only, aux as context)
+auxiliary string `aux`. A frozen evaluator vLLM scores two quantities (two
+prompt_logprobs calls per rollout):
+  - baseline:  `suffix | prefix`            (no aux conditioning)
+  - treatment: `(aux ⊕ suffix) | prefix`    (joint scoring; per-token logprobs
+                                             returned for every token in aux⊕suffix)
 
-Reward is a hybrid weighted sum of two deltas, optionally docked by a hard
-length penalty when the policy hit its `max_tokens` cap:
+The treatment call's per-token logprobs are split:
+  - first |aux| tokens   → log p(aux  | prefix)
+  - last  |suffix| tokens → log p(suffix | prefix, aux)
+This gives us all three NLL averages from just two evaluator calls.
 
-  avg_NLL_baseline    = -sum_logprob(suffix | prefix)          / |suffix|
-  avg_NLL_treatment   = -sum_logprob(aux⊕suffix | prefix)      / (|aux| + |suffix|)
-  avg_NLL_conditional = -sum_logprob(suffix | prefix, aux)     / |suffix|
+Reward is a hybrid weighted sum of three deltas, docked by a hard length
+penalty when the policy hit its `max_tokens` cap:
 
-  suffix_delta = avg_NLL_baseline - avg_NLL_conditional
-  joint_delta  = avg_NLL_baseline - avg_NLL_treatment
-  reward       = α · suffix_delta + β · joint_delta - length_penalty_applied
+  avg_NLL_baseline    = -sum_logprob(suffix | prefix)        / |suffix|
+  avg_NLL_treatment   = -sum_logprob(aux⊕suffix | prefix)    / (|aux| + |suffix|)
+  avg_NLL_aux         = -sum_logprob(aux  | prefix)          / |aux|
+  avg_NLL_conditional = -sum_logprob(suffix | prefix, aux)   / |suffix|
 
-with the constraint `α + β = 1` (asserted at runtime).
+  suffix_delta = avg_NLL_baseline - avg_NLL_conditional   # aux helps predict suffix?
+  joint_delta  = avg_NLL_baseline - avg_NLL_treatment     # joint scoring (length-diluted)
+  aux_delta    = avg_NLL_baseline - avg_NLL_aux           # aux fluent given prefix?
+
+  reward = α · suffix_delta + β · joint_delta + γ · aux_delta - length_penalty_applied
+
+with the constraint `α + β + γ = 1` (asserted at runtime).
 
 Why hybrid: v00.01 used reward = joint_delta only. That formula admits a
 copy-prefix hack — the model emits long aux that is trivially predictable
@@ -26,6 +35,11 @@ under the evaluator, which inflates the (|aux| + |suffix|) denominator with
 low-NLL tokens and lowers avg_NLL_treatment without making the suffix any
 easier to predict. suffix_delta divides both sides by |suffix|, so it is
 not dilutable and directly measures "did aux help predict the suffix?".
+
+aux_delta (γ): rewards aux that is per-token easier to predict from prefix
+than the suffix is. Acts as a fluency / coherence regularizer when small;
+at large γ it can re-introduce the copy-prefix pathology (the most
+predictable aux is a copy of the prefix). Counter-balanced by α.
 
 Length penalty: when policy generation finishes due to `max_tokens` (vs.
 natural EOS), `length_penalty` is subtracted from the reward. Detection
@@ -35,7 +49,7 @@ this stack). Default `length_penalty=0.0` (off); typical comparison value
 is `0.1`.
 
 Backward compatibility: defaults `reward_alpha=0.0, reward_beta=1.0,
-length_penalty=0.0` reproduce the v00.01 reward exactly.
+reward_gamma=0.0, length_penalty=0.0` reproduce the v00.01 reward exactly.
 
 `suffix_overlap_ratio` continues to be logged for monitoring; it is NOT
 subtracted from the reward.
@@ -62,11 +76,14 @@ class Metrics(BaseMetrics):
     avg_nll_baseline: float = 0.0
     avg_nll_treatment: float = 0.0
     avg_nll_conditional: float = 0.0
+    avg_nll_aux: float = 0.0
     suffix_delta: float = 0.0
     joint_delta: float = 0.0
+    aux_delta: float = 0.0
     nll_delta: float = 0.0
     reward_alpha_term: float = 0.0
     reward_beta_term: float = 0.0
+    reward_gamma_term: float = 0.0
     length_truncated: bool = False
     length_penalty_applied: float = 0.0
     aux_tokens: int = 0
@@ -87,12 +104,19 @@ def remove_reasoning(completion: str, reasoning_delimiters: list[str] | None = N
     return ""
 
 
-def _sum_logprobs(result_dict: dict) -> float:
+def _sum_logprobs(result_dict: dict, start: int = 0, end: int | None = None) -> float:
     """Extract sum of logprobs from a get_batch_logprobs_token_ids result entry.
 
     Response shape: {"content": [{"logprob": float, "token_id": str, ...}, ...]}
+
+    Optional `start`/`end` slice indices select a sub-range of completion tokens —
+    used to split the treatment call's per-token logprobs into the aux portion
+    (first |aux|) and the suffix portion (last |suffix|).
     """
-    return sum(item["logprob"] for item in result_dict["content"])
+    items = result_dict["content"]
+    if end is None:
+        end = len(items)
+    return sum(item["logprob"] for item in items[start:end])
 
 
 def _truncate_to_fit(
@@ -202,9 +226,13 @@ async def generate_latent_thought_rollout(
     if overshoot > 0:
         aux_ids = aux_ids[: max(0, len(aux_ids) - overshoot)]
 
-    # Three prompt_logprobs calls per rollout. Higher evaluator throughput
-    # pressure than v00.01 — monitor evaluator queue length on first run.
-    baseline_result, treatment_result, conditional_result = await asyncio.gather(
+    # Two prompt_logprobs calls per rollout. The treatment call returns
+    # per-token logprobs for every token in (aux ⊕ suffix); we slice it to
+    # recover both `log p(aux | prefix)` (first |aux|) and
+    # `log p(suffix | prefix, aux)` (last |suffix|), which is mathematically
+    # identical to a separate `get_batch_logprobs_token_ids([prefix+aux],
+    # [suffix])` call (same target tokens, same conditioning context).
+    baseline_result, treatment_result = await asyncio.gather(
         asyncio.to_thread(
             evaluator_llm.get_batch_logprobs_token_ids,
             [prefix_ids],
@@ -215,31 +243,33 @@ async def generate_latent_thought_rollout(
             [prefix_ids],
             [aux_ids + suffix_ids],
         ),
-        asyncio.to_thread(
-            evaluator_llm.get_batch_logprobs_token_ids,
-            [prefix_ids + aux_ids],
-            [suffix_ids],
-        ),
     )
     sum_lp_baseline = _sum_logprobs(baseline_result[0])
     sum_lp_treatment = _sum_logprobs(treatment_result[0])
-    sum_lp_conditional = _sum_logprobs(conditional_result[0])
+    # Split the treatment per-token logprobs at the aux/suffix boundary.
+    sum_lp_aux = _sum_logprobs(treatment_result[0], 0, len(aux_ids))
+    sum_lp_conditional = _sum_logprobs(treatment_result[0], len(aux_ids))
 
+    n_aux = max(1, len(aux_ids))
     n_suffix = max(1, len(suffix_ids))
     n_joint = max(1, len(aux_ids) + len(suffix_ids))
     avg_nll_baseline = -sum_lp_baseline / n_suffix
     avg_nll_treatment = -sum_lp_treatment / n_joint
+    avg_nll_aux = -sum_lp_aux / n_aux
     avg_nll_conditional = -sum_lp_conditional / n_suffix
 
     suffix_delta = avg_nll_baseline - avg_nll_conditional
     joint_delta = avg_nll_baseline - avg_nll_treatment
+    aux_delta = avg_nll_baseline - avg_nll_aux
 
     alpha = float(lt_cfg.get("reward_alpha", 0.0))
     beta = float(lt_cfg.get("reward_beta", 1.0))
-    assert abs(alpha + beta - 1.0) < 1e-6, (
-        f"latent_thought.reward_alpha + reward_beta must equal 1.0, got {alpha + beta}"
+    gamma = float(lt_cfg.get("reward_gamma", 0.0))
+    assert abs(alpha + beta + gamma - 1.0) < 1e-6, (
+        f"latent_thought.reward_alpha + reward_beta + reward_gamma must equal 1.0, "
+        f"got {alpha + beta + gamma} (alpha={alpha}, beta={beta}, gamma={gamma})"
     )
-    reward = alpha * suffix_delta + beta * joint_delta
+    reward = alpha * suffix_delta + beta * joint_delta + gamma * aux_delta
 
     # Hard length penalty when the policy stopped because it hit max_tokens.
     # LLMOutput in this stack does not carry finish_reason, so detect via
@@ -274,11 +304,14 @@ async def generate_latent_thought_rollout(
         avg_nll_baseline=float(avg_nll_baseline),
         avg_nll_treatment=float(avg_nll_treatment),
         avg_nll_conditional=float(avg_nll_conditional),
+        avg_nll_aux=float(avg_nll_aux),
         suffix_delta=float(suffix_delta),
         joint_delta=float(joint_delta),
+        aux_delta=float(aux_delta),
         nll_delta=float(joint_delta),  # backward-compat alias for v00.01 dashboards
         reward_alpha_term=float(alpha * suffix_delta),
         reward_beta_term=float(beta * joint_delta),
+        reward_gamma_term=float(gamma * aux_delta),
         length_truncated=length_truncated,
         length_penalty_applied=float(length_penalty_applied),
         aux_tokens=len(aux_ids),

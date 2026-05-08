@@ -82,3 +82,28 @@
 - **Config**: `conf/latent-thought-v00.06.yaml` (α=0.5, β=0.5, length_penalty=0.1)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.06.sh`
 
+## EXP-007: latent-thought-v00.07 (suffix-only + small fluency regularizer)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004 (small γ improves stability without re-introducing copy-prefix)
+- **Goal**: Test whether γ=0.1 on aux_delta gently improves training over pure suffix-only (v00.03).
+- **Config**: `conf/latent-thought-v00.07.yaml` (α=0.9, β=0, γ=0.1, length_penalty=0)
+- **Command**: `sbatch train/RL/bash/latent-thought-v00.07.sh`
+- **Code snapshot**: branch `aicsi`, will record commit at submission
+
+## EXP-008: latent-thought-v00.08 (suffix-only + moderate fluency regularizer)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004
+- **Goal**: γ=0.3 — middle of the sweep. Should still favor suffix prediction but with stronger fluency pressure.
+- **Config**: `conf/latent-thought-v00.08.yaml` (α=0.7, β=0, γ=0.3, length_penalty=0)
+- **Command**: `sbatch train/RL/bash/latent-thought-v00.08.sh`
+
+## EXP-009: latent-thought-v00.09 (50/50 suffix and aux fluency)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004 (upper bound — copy-prefix pathology should start to emerge here if it's going to)
+- **Goal**: γ=0.5 — equal weight on suffix delta and aux fluency. Watch for `suffix_overlap_ratio` increasing (aux drifting toward prefix copy).
+- **Config**: `conf/latent-thought-v00.09.yaml` (α=0.5, β=0, γ=0.5, length_penalty=0)
+- **Command**: `sbatch train/RL/bash/latent-thought-v00.09.sh`
+

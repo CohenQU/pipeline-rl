@@ -56,3 +56,24 @@
 - **Artifacts produced**: DEC-004, ERR-001; preprocess override now in all 6 latent-thought yamls.
 - **Open items**: Watch the resubmitted jobs' first 5–15 minutes for ERR-001 recurrence (per STATUS.md Pickup Instructions). Once 1596540/1/2 take their first training step, watch the reward components in wandb.
 
+## 2026-05-08 Session 1 — add aux_delta term + drop conditional eval call
+- **Requests**: User wants a third reward term on `aux | prefix` so we optimize both "aux is fluent given prefix" and "suffix is predictable given prefix+aux". After exploring options, settled on the delta-form `aux_delta = avg_NLL(suffix|prefix) − avg_NLL(aux|prefix)` weighted by γ, with α+β+γ=1.
+- **Discussion notes**:
+  - Realized the existing `treatment` evaluator call (per-token logprobs of `aux⊕suffix | prefix`) already contains `log p(aux | prefix)` (first |aux| tokens) and `log p(suffix | prefix, aux)` (last |suffix| tokens). So splitting the treatment result gives us BOTH the new aux term AND the existing conditional NLL for free — we can drop the third evaluator call (which we added in session 1 today) and net 2 calls/rollout instead of 3 (back to v00.01 cost).
+  - Flagged that γ > 0 has a built-in tension with α: aux being more predictable (γ wants this) is the same direction as the v00.01 copy-prefix hack. So small γ ≈ fluency regularizer, large γ ≈ re-introduces the pathology. User picked a γ sweep (0.1, 0.3, 0.5) on top of suffix-only base (β=0, varying α) to find the sweet spot.
+  - Decided to default `reward_gamma: 0.0` so v00.01–v00.06 still pass the new α+β+γ=1 assert without any other edits, and added the explicit knob to all existing configs for self-documentation.
+- **Actions**:
+  - Refactored `pipelinerl/domains/latent_thought/rollouts.py`:
+    - Updated `_sum_logprobs(result, start, end)` to support slicing.
+    - Dropped the third `get_batch_logprobs_token_ids([prefix+aux], [suffix])` call.
+    - Split treatment result into aux portion and suffix portion.
+    - Added `avg_nll_aux`, `aux_delta`, `reward_gamma`, `reward_gamma_term` to the reward path and `Metrics` class.
+    - Updated assert from `α+β=1` to `α+β+γ=1`.
+    - Rewrote module docstring.
+  - Added `reward_gamma: 0.0` line to `conf/latent-thought-v00.0{1,2,3,4,5,6}.yaml` for explicit documentation.
+  - Created `conf/latent-thought-v00.0{7,8,9}.yaml` and matching launch scripts for the γ sweep on top of suffix-only base: (α=0.9, γ=0.1), (α=0.7, γ=0.3), (α=0.5, γ=0.5). All β=0, no length penalty.
+  - Numerical regression: 6 unit checks pass. The treatment-split conditional matches what a separate conditional call would return (T5).
+- **Outcome**: Code, configs, scripts ready. Same evaluator cost as v00.01 (2 calls/rollout). All 10 latent-thought yamls verified to sum to 1.0 across (α,β,γ).
+- **Artifacts produced**: DEC-005 (the aux_delta + treatment-split decision), HYP-004 (γ sweep hypothesis), EXP-007/008/009 (three γ sweep entries).
+- **Open items**: NOT submitted to Slurm — the in-flight v00.02/03/05 (1596540–1596542) have priority. User will likely submit the γ sweep after seeing initial v00.03 results.
+
