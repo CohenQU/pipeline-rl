@@ -49,7 +49,7 @@ finetune:
         entropy_bonus: 0.0001
         final_entropy_bonus: ${finetune.rl.entropy_bonus}
         overlong_filtering: false
-    save_checkpoint_steps: 10
+    save_checkpoint_steps: 25
     push_to_hub: true
     hub_model_id: lm-provers/QED-Nano-v1.6-dev
     hub_model_revision: latent-thought-v01.07
