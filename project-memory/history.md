@@ -77,3 +77,19 @@
 - **Artifacts produced**: DEC-005 (the aux_delta + treatment-split decision), HYP-004 (γ sweep hypothesis), EXP-007/008/009 (three γ sweep entries).
 - **Open items**: NOT submitted to Slurm — the in-flight v00.02/03/05 (1596540–1596542) have priority. User will likely submit the γ sweep after seeing initial v00.03 results.
 
+## 2026-05-08 Session 2 — v01 series on dolma3_dolmino
+- **Requests**: User asked to create v01.07/08/09 (mirroring v00.07/08/09 reward) trained on `allenai/dolma3_dolmino_mix-10B-1025`. Then asked to also create v01.03 and v01.05 (mirroring v00.03 and v00.05). Specified test set should be a 1K random subset from the train split of dolmino (not the wikitext val I initially proposed).
+- **Discussion notes**:
+  - User mentioned dolma has columns `id` and `text` — the loader's `text_field: text` already matches; `id` is unused.
+  - Dolma at 10B tokens cannot be fully materialized; needed streaming + max_rows to subsample.
+  - For "1K random test from train split": settled on the streaming idiom of "same shuffle_seed in both train and test specs, then `skip_rows` in test". Same seed → same shuffled stream order; train takes [0, 500K), test takes [500K, 501K). Cleanly disjoint and deterministic.
+  - Also checked Slurm status — all three v00 jobs (1596540/41/42) had been scancelled at 2026-05-04 06:18 by an external SIGTERM after 14–22h of training; checkpoints remain on disk.
+- **Actions**:
+  - Extended `pipelinerl/domains/latent_thought/load_datasets.py` to accept per-spec `streaming`, `shuffle_seed`, `shuffle_buffer_size`, `skip_rows`, `max_rows`. Operations apply in order: load → shuffle → skip → take/select.
+  - Created `conf/latent-thought-v01.0{3,5,7,8,9}.yaml`. v01.03 and v01.05 were sed-copied from v01.07 then header rewritten; all five share identical dolma streaming config (shuffle_seed=42, train max_rows=500000, test skip_rows=500000 max_rows=1000) and differ only in the (α, β, γ) tuple.
+  - Created matching launch scripts.
+  - Verified all 5 v01 yamls parse, sum to 1.0, and have matching train/test slices.
+- **Outcome**: Loader changes are backward-compatible (defaults preserve old behavior). Five new dolma configs and launch scripts ready to submit. Nothing in queue.
+- **Artifacts produced**: DEC-006, EXP-010 through EXP-014.
+- **Open items**: User to decide whether to submit v00.x and/or v01.x jobs. Suggest submitting v01.03 first (suffix-only smoke run on dolma) to verify the streaming dataset works end-to-end, then queue the others.
+

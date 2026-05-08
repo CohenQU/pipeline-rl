@@ -183,6 +183,11 @@ def load_datasets(
             trust_remote_code = spec.get("trust_remote_code", True)
             spec_text_field = spec.get("text_field", text_field)
             spec_row_grouping = spec.get("row_grouping", row_grouping)
+            spec_streaming = bool(spec.get("streaming", False))
+            spec_shuffle_seed = spec.get("shuffle_seed", None)
+            spec_shuffle_buffer = int(spec.get("shuffle_buffer_size", 10000))
+            spec_skip_rows = int(spec.get("skip_rows", 0))
+            spec_max_rows = spec.get("max_rows", None)
         elif isinstance(spec, str) and "/" in spec:
             hub_id = spec
             config = None
@@ -190,6 +195,11 @@ def load_datasets(
             trust_remote_code = True
             spec_text_field = text_field
             spec_row_grouping = row_grouping
+            spec_streaming = False
+            spec_shuffle_seed = None
+            spec_shuffle_buffer = 10000
+            spec_skip_rows = 0
+            spec_max_rows = None
         else:
             logger.warning(f"Unrecognized dataset spec, skipping: {spec!r}")
             continue
@@ -197,8 +207,40 @@ def load_datasets(
         load_args: Tuple[Any, ...] = (hub_id,)
         if config is not None:
             load_args += (config,)
-        dataset = load_dataset(*load_args, split=split, trust_remote_code=trust_remote_code)
+        dataset = load_dataset(
+            *load_args,
+            split=split,
+            trust_remote_code=trust_remote_code,
+            streaming=spec_streaming,
+        )
         dataset_label = hub_id.split("/")[-1] + (f"/{config}" if config else "") + f":{split}"
+
+        # Optional shuffle / skip / take. Used for very large datasets like
+        # allenai/dolma3_dolmino_mix-10B-1025 (10B tokens) where we cannot
+        # afford to materialize the full corpus in RAM. With matching
+        # `shuffle_seed` across two specs (e.g., train and test pointed at
+        # the same source), `skip_rows` cleanly carves out a disjoint slice.
+        if spec_shuffle_seed is not None:
+            if spec_streaming:
+                dataset = dataset.shuffle(
+                    seed=int(spec_shuffle_seed),
+                    buffer_size=spec_shuffle_buffer,
+                )
+            else:
+                dataset = dataset.shuffle(seed=int(spec_shuffle_seed))
+        if spec_skip_rows > 0:
+            if spec_streaming:
+                dataset = dataset.skip(spec_skip_rows)
+            else:
+                n = len(dataset)
+                start = min(spec_skip_rows, n)
+                dataset = dataset.select(range(start, n))
+        if spec_max_rows is not None:
+            n_take = int(spec_max_rows)
+            if spec_streaming:
+                dataset = dataset.take(n_take)
+            else:
+                dataset = dataset.select(range(min(n_take, len(dataset))))
 
         all_texts = [_process_text_row(row, spec_text_field) for row in dataset]
 

@@ -1,0 +1,207 @@
+# ---------------------
+# Config for latent_thought RL training.
+#
+# v01.09: same reward settings as v00.07 (suffix-only reward α=0.5 with a
+# small fluency regularizer γ=0.5, β=0, no length penalty), but trained on
+# `allenai/dolma3_dolmino_mix-10B-1025` instead of wikitext-103.
+#
+# Dolma is too large to fully materialize (10B tokens), so we stream and
+# subsample. Train uses the first 500K rows of a seeded random shuffle;
+# test uses the next 1K rows of the same shuffled stream — same shuffle
+# seed gives the two streams the same order, then skip_rows cleanly
+# separates train from test.
+#
+# See docs/plans/2026-05-02-latent-thought-reward-redesign.md
+# ---------------------
+defaults:
+    - base
+    - _self_
+
+# Policy init (the trainable model). May be an instruct/thinking variant.
+model_path: Qwen/Qwen3-4B-Instruct-2507
+model_revision: main
+
+# Frozen evaluator (independent of policy). Only this model's vLLM is used to
+# score logprobs for the reward. Weight updates are disabled at launch.
+evaluator:
+    model_path: Qwen/Qwen3-4B-Base
+    # model_revision: main
+
+eval_every_n_versions: 12800
+
+preprocess:
+    shared_memory_entry_size: 2000000000
+    # Override base.yaml default (64) — see latent-thought-v00.01.yaml.
+    max_ready_samples_per_lead: 256
+
+finetune:
+    attempts: 8
+    train_batch_size: 32
+    valid_batch_size: 32
+    gradient_accumulation_passes: 32
+    seq_length: 18432
+    seq_parallel: 2
+    learning_rate: 1.0e-6
+    lr_scheduler_type: constant_with_warmup
+    num_warmup_steps: 0
+    rl:
+        kl_coef: 0
+        entropy_bonus: 0.0001
+        final_entropy_bonus: ${finetune.rl.entropy_bonus}
+        overlong_filtering: false
+    save_checkpoint_steps: 10
+    push_to_hub: true
+    hub_model_id: lm-provers/QED-Nano-v1.6-dev
+    hub_model_revision: latent-thought-v01.09
+    hub_ignore_patterns:
+        - "*.pt"
+        - "*.pth"
+
+llm:
+    parameters:
+        max_tokens: 1024     # cap on aux length; reward already dampens runaway aux
+        temperature: 1.0
+    reasoning_delimiters: ["</think>"]
+    wandb_table:
+        enabled: true
+        keep_last_k_groups: 32
+        log_every_n_groups: 32
+
+test_llm:
+    parameters:
+        max_tokens: 1024
+        temperature: 0.8
+        top_p: 0.95
+        top_k: 20
+
+# This domain has no external LLM grader (the evaluator is a local frozen vLLM
+# launched as the new evaluator_llm job). Skip the grader provisioning path.
+llm_grader:
+    local: false
+
+actor:
+    llm_max_rollouts: 16
+    max_retries: 5
+    shared_memory_entry_size: 2000000000
+    rollout_policy: pipelinerl.domains.latent_thought.generate_latent_thought_rollout
+    system_prompt: null
+    task_template: |-
+        You will be shown a PREFIX and a SUFFIX from a text document. Your task is to generate auxiliary text AUX such that the combined continuation AUX followed by SUFFIX is easy on average for a frozen base language model to predict, given only the PREFIX. The reward depends on the joint per-token predictability of AUX and SUFFIX together — both must be easy to predict; making only one of them easy is not enough.
+
+        Write anything you want. There is no required format.
+
+        PREFIX:
+        {prefix}
+
+        SUFFIX:
+        {suffix}
+
+        AUXILIARY TEXT:
+    discount_factor: 1.0
+
+# Domain-specific knobs read by generate_latent_thought_rollout.
+latent_thought:
+    max_total_tokens: 16384   # prefix+aux+suffix budget for the evaluator
+    reward_alpha: 0.5         # weight on suffix_delta (avg_NLL(suffix|prefix) - avg_NLL(suffix|prefix,aux))
+    reward_beta: 0.0          # weight on joint_delta (avg_NLL(suffix|prefix) - avg_NLL(aux⊕suffix|prefix)); v00.01 reward
+    reward_gamma: 0.5         # weight on aux_delta (avg_NLL(suffix|prefix) - avg_NLL(aux|prefix)); fluency regularizer
+    length_penalty: 0.0       # subtracted from reward when policy hits llm.parameters.max_tokens
+
+dataset_loader: pipelinerl.domains.latent_thought.load_datasets
+dataset_loader_params:
+    seed: 42
+    min_side_chars: 256
+    max_total_chars: 24000
+    text_field: text
+    row_grouping: row         # dolma docs are long, multi-paragraph; skip the article-grouping heuristic
+train_dataset_names:
+    - hub_id: allenai/dolma3_dolmino_mix-10B-1025
+      split: train
+      streaming: true
+      shuffle_seed: 42         # MUST match test spec so the streams agree
+      shuffle_buffer_size: 10000
+      max_rows: 500000
+test_dataset_names:
+    - hub_id: allenai/dolma3_dolmino_mix-10B-1025
+      split: train
+      streaming: true
+      shuffle_seed: 42         # same seed → same shuffled stream as train
+      shuffle_buffer_size: 10000
+      skip_rows: 500000        # take rows AFTER train's slice
+      max_rows: 1000
+
+vllm_config:
+    use_v1: false
+    vllm_kwargs:
+        dtype: bfloat16
+        gpu-memory-utilization: 0.9
+        num-scheduler-steps: 1
+        disable-log-requests: ""
+        disable-frontend-multiprocessing: ""
+        max-num-seqs: ${actor.llm_max_rollouts}
+        max-num-batched-tokens: 16384
+        max-model-len: ${finetune.seq_length}
+        return-tokens-as-token-ids: ""
+        tensor-parallel-size: 1
+        pipeline-parallel-size: 1
+        generation-config: vllm
+
+# vLLM config used for the frozen evaluator (scoring only — no generation).
+#
+# Memory pressure comes from prompt_logprobs (echo=True): vLLM's sampler
+# allocates a (chunk_len, vocab_size) float tensor inside _get_ranks for
+# every prefill step (~10 GB at 16k tokens × 152k vocab in bf16).
+#
+# To keep that bounded — without lowering the legitimate prefix+aux+suffix
+# budget — we reduce the prefill *chunk* size and concurrency:
+#   - max-num-batched-tokens=4096 with enable-chunked-prefill caps the chunk
+#     size, so peak sampler activation per chunk is ~2.5 GB. A 16k prompt is
+#     scored in 4 chunks; for scoring-only there's no decode step that needs
+#     the full budget in a single forward pass.
+#   - max-num-seqs=2 caps concurrent requests on each evaluator.
+#   - enforce-eager disables CUDA graph capture (~2-5 GB headroom).
+#   - gpu-memory-utilization=0.7 leaves more room outside KV cache.
+# v00.07+ does 2 prompt_logprobs calls per rollout (treatment is split into
+# aux + suffix portions; same as v00.01 cost).
+evaluator_vllm_config:
+    use_v1: false
+    vllm_kwargs:
+        dtype: bfloat16
+        gpu-memory-utilization: 0.7
+        enforce-eager: ""
+        num-scheduler-steps: 1
+        disable-log-requests: ""
+        disable-frontend-multiprocessing: ""
+        max-num-seqs: 2
+        max-logprobs: 1
+        max-num-batched-tokens: 4096
+        max-model-len: 16384
+        enable-chunked-prefill: ""
+        return-tokens-as-token-ids: ""
+        tensor-parallel-size: 1
+        pipeline-parallel-size: 1
+        generation-config: vllm
+
+world:
+    replicas: 1
+    actor_fraction: 24       # 3 nodes on a 5-node allocation
+    evaluator_fraction: 8    # 1 node
+    preprocessor_fraction: 0
+    finetune_fraction: 8     # 1 node
+    env_replicas: 0
+    actor_group_port: 9000
+    environment_start_port: 7777
+
+wandb:
+    use_wandb: true
+    wandb_id: null
+    wandb_name: null
+    wandb_entity_name: null
+    wandb_project_name: AI-CSI
+    wandb_resume: always
+    wandb_use_basename: True
+    wandb_workspace_root: null
+    wandb_group: null
+    wandb_dir: null
+    tags: ["latent_thought", "dolma"]
+    log_verifier_table: false

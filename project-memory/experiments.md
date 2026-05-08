@@ -107,3 +107,39 @@
 - **Config**: `conf/latent-thought-v00.09.yaml` (α=0.5, β=0, γ=0.5, length_penalty=0)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.09.sh`
 
+## EXP-010: latent-thought-v01.03 (suffix-only on dolma)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-001 (suffix-only kills copy-prefix hack on a more diverse dataset)
+- **Goal**: Replicate v00.03 (α=1, β=0) on `allenai/dolma3_dolmino_mix-10B-1025` to see how the suffix-only reward generalizes off wikitext.
+- **Config**: `conf/latent-thought-v01.03.yaml` (dolma streaming, train rows [0,500K), test rows [500K,501K))
+- **Command**: `sbatch train/RL/bash/latent-thought-v01.03.sh`
+
+## EXP-011: latent-thought-v01.05 (50/50 hybrid on dolma)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-003 + HYP-001 (hybrid behavior under domain shift)
+- **Config**: `conf/latent-thought-v01.05.yaml` (α=0.5, β=0.5, γ=0)
+- **Command**: `sbatch train/RL/bash/latent-thought-v01.05.sh`
+
+## EXP-012: latent-thought-v01.07 (suffix-only + γ=0.1 on dolma)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004 on dolma — small fluency regularizer on a more natural corpus.
+- **Config**: `conf/latent-thought-v01.07.yaml` (α=0.9, β=0, γ=0.1)
+- **Command**: `sbatch train/RL/bash/latent-thought-v01.07.sh`
+
+## EXP-013: latent-thought-v01.08 (γ=0.3 on dolma)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004
+- **Config**: `conf/latent-thought-v01.08.yaml` (α=0.7, β=0, γ=0.3)
+- **Command**: `sbatch train/RL/bash/latent-thought-v01.08.sh`
+
+## EXP-014: latent-thought-v01.09 (γ=0.5 on dolma)
+- **Date**: 2026-05-08 (queued)
+- **Status**: ready to submit
+- **Hypothesis**: HYP-004 (upper bound on dolma)
+- **Config**: `conf/latent-thought-v01.09.yaml` (α=0.5, β=0, γ=0.5)
+- **Command**: `sbatch train/RL/bash/latent-thought-v01.09.sh`
+

@@ -27,6 +27,24 @@
   - Both soft + hard — overcomplicates for v0.
 - **Reasoning**: Single scalar gives a clean ablation, matches user's framing ("variable control the penalty, default is 0, 0.1 as comparison"). Can layer on a soft ramp later if the hard penalty is too brittle.
 
+## DEC-006: latent_thought v01 series — train on dolma3_dolmino with streaming + seeded slice for disjoint train/test
+- **Date**: 2026-05-08
+- **Context**: Want to scale latent_thought RL beyond wikitext-103 to a domain-diverse, large pretraining corpus (`allenai/dolma3_dolmino_mix-10B-1025`). At 10B tokens, fully materializing the dataset would cost ~40 GB of host RAM, which is infeasible on the actor/preprocessor nodes.
+- **Decision**:
+  - Extend `pipelinerl/domains/latent_thought/load_datasets.py` to accept `streaming`, `shuffle_seed`, `shuffle_buffer_size`, `skip_rows`, and `max_rows` per dataset spec. Operations apply in order: `load_dataset(streaming=…)` → optional `shuffle(seed, buffer_size)` → optional `skip` → optional `take/select`.
+  - For v01.03/05/07/08/09, train and test BOTH point at `allenai/dolma3_dolmino_mix-10B-1025` with `streaming: true, shuffle_seed: 42` (same seed → same shuffled stream). Train: `max_rows: 500000` (rows [0, 500K)). Test: `skip_rows: 500000, max_rows: 1000` (rows [500K, 501K)). Cleanly disjoint, deterministic, no overlap.
+  - v01 series mirrors selected v00 reward settings on the new dataset:
+    - v01.03 = v00.03 (α=1, suffix-only)
+    - v01.05 = v00.05 (50/50 hybrid α=0.5, β=0.5)
+    - v01.07 = v00.07 (α=0.9, γ=0.1)
+    - v01.08 = v00.08 (α=0.7, γ=0.3)
+    - v01.09 = v00.09 (α=0.5, γ=0.5)
+- **Alternatives considered**:
+  - Test on wikitext-103 validation (cross-domain eval, my initial proposal) — user rejected; wants in-domain test from dolma itself.
+  - Different shuffle seed for test — would let train and test overlap by chance; same seed + skip is the safe construction.
+  - `streaming: false` with `max_rows` — would still trigger a multi-GB upfront download for the 500K-row subset; streaming avoids it.
+- **Reasoning**: Streaming + seeded shuffle + skip is the standard idiom for carving disjoint slices from a large HF dataset without materializing it. The `shuffle_seed` discipline (must match between train and test specs) is documented in the v01 yamls.
+
 ## DEC-005: Add aux_delta term to latent_thought reward + collapse 3 evaluator calls back to 2
 - **Date**: 2026-05-08
 - **Context**: Wanted a third reward component that explicitly rewards `log p(aux | prefix)` (aux being plausible/fluent given prefix) alongside the existing `suffix_delta` (informativeness about suffix) and `joint_delta` (length-diluted joint).
