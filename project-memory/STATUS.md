@@ -16,9 +16,15 @@ asserted `α+β+γ=1`. Two evaluator calls/rollout (treatment is split to derive
 
 ## Waiting On
 
-(no jobs running — all previous v00.x submissions scancelled 2026-05-04 06:18 after 14–22h)
+- **1608463** PD: latent-thought-v01.03 (suffix-only on dolma). EXP-010. Smoke test for v01 series.
+  Resubmitted with the dolma-loader fix (ERR-002 / `keep_columns: ["text"]`).
+  - Output: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v01.03/` (wiped, fresh)
+  - Logs: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1608463.{out,err}`
+  - Wandb project `latent-thought`.
+  - Status: `squeue -j 1608463` or `sacct -j 1608463`
+  - (Prior runs 1607783 and 1607796 both hung 13+h doing nothing — see ERR-002.)
 
-Checkpoints from the cancelled runs are still on disk under
+Checkpoints from earlier cancelled v00 runs are still on disk under
 `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v00.0{2,3,5}/finetune/intermediate/`.
 With `wandb_resume: always` and `--requeue`, re-`sbatch`ing the v00 scripts resumes from the
 last checkpoint.

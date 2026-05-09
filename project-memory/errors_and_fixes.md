@@ -9,6 +9,15 @@
 <!-- - **Fix**: What resolved it -->
 <!-- - **Prevention**: How to avoid in the future (if applicable) -->
 
+## ERR-002: dolma3_dolmino streaming load crashes actor with pyarrow JSON parse error
+- **Date**: 2026-05-09
+- **Error**: First v01.03 run (job 1607796) hung at startup; logs revealed actor crashed in `dataset_loader(cfg.test_dataset_names, ...)` with `pyarrow.lib.ArrowInvalid: JSON parse error: Column(/metadata/google_gemma-3-12b-it_contains_pii/[]/[]) changed from number to boolean in row 0`. Trainer kept waiting for actor data forever (no NCCL timeout in this case because trainer hadn't started training yet — it was still in the "waiting for actor/0/0 to be created" loop). Job ran 13+ hours doing nothing before being noticed.
+- **Cause**: The `allenai/dolma3_dolmino_mix-10B-1025` dataset has cross-shard schema drift in its `metadata` column. Different shards encode the same nested field (`metadata/google_gemma-3-12b-it_contains_pii`) with different types — number in some, boolean in others. HF's JSON builder uses pyarrow's `read_json` to parse each shard, which infers a per-shard schema. When it can't reconcile types, it raises ArrowInvalid. The crash occurred even with `streaming=True` because pyarrow does the per-row schema check at parse time.
+- **Fix**: Project columns BEFORE iteration via `dataset.select_columns(["text"])`. HF pushes this down into the JSON reader so pyarrow only materializes the requested columns, sidestepping the bad `metadata` column entirely. Implemented as `keep_columns: list[str]` per-spec option in `load_datasets.py`, applied after `load_dataset()` and before any shuffle/skip/take. All five v01 dolma yamls now set `keep_columns: ["text"]`.
+- **Prevention**:
+  1. For any large multi-shard HF dataset (especially CommonCrawl-derived ones with rich metadata), set `keep_columns` to ONLY the fields you actually consume.
+  2. Symptom signature: actor's `error.log` is non-empty and `info.log` shows `dataset_loader(...test_dataset_names...)` traceback; preprocessor stuck on "Waiting for actor/0/0 to be created" indefinitely. Kill the job — the deadlock won't resolve.
+
 ## ERR-001: latent_thought RL job hangs on first step then NCCL-times out
 - **Date**: 2026-05-02
 - **Error**: Trainer logs `Batch queue is empty, retrying` indefinitely; ~10 min later NCCL collective `WorkNCCL(SeqNum=475, OpType=_REDUCE_SCATTER_BASE)` times out across all finetune ranks; the whole multi-node job aborts. Looks like a network/NCCL bug but is actually a data-pipeline deadlock. Symptom seen on Slurm 1595298 (v00.03), wasted ~4h 24m before cancellation.
