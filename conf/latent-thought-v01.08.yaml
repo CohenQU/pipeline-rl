@@ -116,20 +116,14 @@ dataset_loader_params:
     row_grouping: row         # dolma docs are long, multi-paragraph; skip the article-grouping heuristic
 train_dataset_names:
     - hub_id: allenai/dolma3_dolmino_mix-10B-1025
-      split: train
-      streaming: true
-      keep_columns: ["text"]   # dolma's metadata column has cross-shard schema drift; project early to avoid pyarrow JSON parse errors
-      shuffle_seed: 42         # MUST match test spec so the streams agree
-      shuffle_buffer_size: 10000
+      loader_kind: jsonl_zst_hf  # custom .jsonl.zst streaming reader (bypasses pyarrow); see ERR-002
+      shuffle_seed: 42           # MUST match test spec so the same shard order is shared
       max_rows: 500000
 test_dataset_names:
     - hub_id: allenai/dolma3_dolmino_mix-10B-1025
-      split: train
-      streaming: true
-      keep_columns: ["text"]   # dolma's metadata column has cross-shard schema drift; project early to avoid pyarrow JSON parse errors
-      shuffle_seed: 42         # same seed → same shuffled stream as train
-      shuffle_buffer_size: 10000
-      skip_rows: 500000        # take rows AFTER train's slice
+      loader_kind: jsonl_zst_hf  # see train_dataset_names
+      shuffle_seed: 42           # same seed -> same shuffled shard order as train
+      skip_rows: 500000          # take rows AFTER train's slice (disjoint)
       max_rows: 1000
 
 vllm_config:

@@ -107,13 +107,18 @@
 - **Config**: `conf/latent-thought-v00.09.yaml` (α=0.5, β=0, γ=0.5, length_penalty=0)
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.09.sh`
 
-## EXP-010: latent-thought-v01.03 (suffix-only on dolma)
-- **Date**: 2026-05-08 (queued)
-- **Status**: ready to submit
+## EXP-010: latent-thought-v01.03 (suffix-only on dolma) — smoke test for v01 series
+- **Date**: 2026-05-08 (running)
+- **Status**: running — Job ID **1607783** on fs-mbz-gpu-[088,113,121,127,220]
 - **Hypothesis**: HYP-001 (suffix-only kills copy-prefix hack on a more diverse dataset)
-- **Goal**: Replicate v00.03 (α=1, β=0) on `allenai/dolma3_dolmino_mix-10B-1025` to see how the suffix-only reward generalizes off wikitext.
+- **Goal**: Replicate v00.03 (α=1, β=0) on `allenai/dolma3_dolmino_mix-10B-1025` to see how the suffix-only reward generalizes off wikitext. Also serves as the v01-series smoke test for the streaming dataset loader (DEC-006).
 - **Config**: `conf/latent-thought-v01.03.yaml` (dolma streaming, train rows [0,500K), test rows [500K,501K))
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.03.sh`
+- **Job ID**: 1607796 (resubmitted after wandb project rename; 1607783 cancelled at 13 min so the new run logs to `latent-thought` instead of `AI-CSI`)
+- **Code snapshot**: branch `aicsi` at commit 21a22d4
+- **Output path**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v01.03/`
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1607796.{out,err}`
+- **Notes**: First v01 run. Watch first 5–15 min for (a) ERR-001 recurrence (preprocess gate / Batch queue empty), and (b) streaming dataset prefetch latency (~30-60s expected before first rollout). After that watch wandb (project `latent-thought`, tag `latent_thought,dolma`) for `suffix_delta`, `aux_tokens`, `suffix_overlap_ratio`.
 
 ## EXP-011: latent-thought-v01.05 (50/50 hybrid on dolma)
 - **Date**: 2026-05-08 (queued)

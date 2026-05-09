@@ -24,14 +24,97 @@ Row-grouping modes:
   - "auto": pick "article" when most rows are short, else "row".
 """
 
+import io
+import json
 import logging
+import random
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from datasets import load_dataset
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
+
+
+def _stream_jsonl_zst_from_hub(
+    hub_id: str,
+    text_field: str,
+    shuffle_seed: Optional[int],
+    skip_rows: int,
+    max_rows: Optional[int],
+) -> Iterator[Dict[str, Any]]:
+    """Stream rows from a HF dataset of `.jsonl.zst` shards, bypassing pyarrow.
+
+    HF datasets uses pyarrow's JSON reader, which infers a per-shard schema
+    and crashes when nested fields drift across rows. allenai/dolma3_dolmino
+    has this problem in `metadata` (e.g. `metadata/google_gemma-3-12b-it_contains_pii`
+    is a number in some rows and a boolean in others). `select_columns` does
+    NOT push down to the parser — pyarrow still parses the full JSON line
+    before any projection happens. See ERR-002.
+
+    This loader sidesteps pyarrow entirely: it lists the dataset's `.jsonl.zst`
+    shards via HfFileSystem, decompresses with zstandard, and parses each
+    line with the stdlib `json` module (which is per-row and tolerates schema
+    differences). Only `text_field` and `id` are kept from each row.
+
+    Shard ordering is deterministic from `shuffle_seed`. If train and test
+    share the same seed, they see the same shard order — apply different
+    `skip_rows` / `max_rows` to carve disjoint slices.
+    """
+    # Imported lazily to avoid hard dep when other datasets are used.
+    import zstandard
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    glob_pattern = f"datasets/{hub_id}/**/*.jsonl.zst"
+    shards = sorted(fs.glob(glob_pattern))
+    if not shards:
+        raise ValueError(
+            f"No .jsonl.zst shards found under {glob_pattern}. "
+            "Loader 'jsonl_zst_hf' requires the HF dataset to ship as compressed JSONL."
+        )
+    if shuffle_seed is not None:
+        rng = random.Random(int(shuffle_seed))
+        rng.shuffle(shards)
+    logger.info(
+        f"[jsonl_zst_hf] {hub_id}: {len(shards)} shards, "
+        f"shuffle_seed={shuffle_seed}, skip_rows={skip_rows}, max_rows={max_rows}"
+    )
+
+    rows_seen = 0
+    rows_yielded = 0
+    for shard in shards:
+        if max_rows is not None and rows_yielded >= max_rows:
+            break
+        try:
+            with fs.open(shard, "rb") as f:
+                dctx = zstandard.ZstdDecompressor()
+                with dctx.stream_reader(f) as zs:
+                    text_stream = io.TextIOWrapper(zs, encoding="utf-8", errors="replace")
+                    for line in text_stream:
+                        rows_seen += 1
+                        if rows_seen <= skip_rows:
+                            continue
+                        if max_rows is not None and rows_yielded >= max_rows:
+                            break
+                        try:
+                            row = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        text = row.get(text_field)
+                        if not isinstance(text, str):
+                            continue
+                        rows_yielded += 1
+                        yield {text_field: text, "id": row.get("id")}
+        except Exception as e:
+            logger.warning(
+                f"[jsonl_zst_hf] skipping shard {shard} ({type(e).__name__}: {e})"
+            )
+            continue
+    logger.info(
+        f"[jsonl_zst_hf] {hub_id}: yielded {rows_yielded} rows (after skipping {skip_rows})"
+    )
 
 
 _PARAGRAPH_RE = re.compile(r"(?:\r\n|\n){2,}")
@@ -189,6 +272,7 @@ def load_datasets(
             spec_skip_rows = int(spec.get("skip_rows", 0))
             spec_max_rows = spec.get("max_rows", None)
             spec_keep_columns = spec.get("keep_columns", None)
+            spec_loader_kind = spec.get("loader_kind", "hf")
         elif isinstance(spec, str) and "/" in spec:
             hub_id = spec
             config = None
@@ -202,56 +286,74 @@ def load_datasets(
             spec_skip_rows = 0
             spec_max_rows = None
             spec_keep_columns = None
+            spec_loader_kind = "hf"
         else:
             logger.warning(f"Unrecognized dataset spec, skipping: {spec!r}")
             continue
 
-        load_args: Tuple[Any, ...] = (hub_id,)
-        if config is not None:
-            load_args += (config,)
-        dataset = load_dataset(
-            *load_args,
-            split=split,
-            trust_remote_code=trust_remote_code,
-            streaming=spec_streaming,
-        )
         dataset_label = hub_id.split("/")[-1] + (f"/{config}" if config else "") + f":{split}"
 
-        # Optional column projection. Push column selection into the streaming
-        # pipeline BEFORE shuffle/skip/take so that pyarrow's per-shard JSON
-        # parser only materializes the requested columns. Required for
-        # allenai/dolma3_dolmino_mix-10B-1025, whose `metadata` column has
-        # cross-shard schema drift (number vs boolean for the same nested
-        # field) that crashes pyarrow's JSON reader if it tries to parse it.
-        if spec_keep_columns:
-            dataset = dataset.select_columns(list(spec_keep_columns))
+        if spec_loader_kind == "jsonl_zst_hf":
+            # Custom streaming loader for HF datasets that ship as .jsonl.zst
+            # shards (e.g. allenai/dolma3_dolmino_mix-10B-1025). Bypasses HF's
+            # pyarrow-based JSON reader to avoid cross-shard schema drift
+            # crashes; see _stream_jsonl_zst_from_hub docstring and ERR-002.
+            dataset = _stream_jsonl_zst_from_hub(
+                hub_id=hub_id,
+                text_field=spec_text_field,
+                shuffle_seed=spec_shuffle_seed,
+                skip_rows=int(spec_skip_rows),
+                max_rows=int(spec_max_rows) if spec_max_rows is not None else None,
+            )
+        elif spec_loader_kind == "hf":
+            load_args: Tuple[Any, ...] = (hub_id,)
+            if config is not None:
+                load_args += (config,)
+            dataset = load_dataset(
+                *load_args,
+                split=split,
+                trust_remote_code=trust_remote_code,
+                streaming=spec_streaming,
+            )
 
-        # Optional shuffle / skip / take. Used for very large datasets like
-        # allenai/dolma3_dolmino_mix-10B-1025 (10B tokens) where we cannot
-        # afford to materialize the full corpus in RAM. With matching
-        # `shuffle_seed` across two specs (e.g., train and test pointed at
-        # the same source), `skip_rows` cleanly carves out a disjoint slice.
-        if spec_shuffle_seed is not None:
-            if spec_streaming:
-                dataset = dataset.shuffle(
-                    seed=int(spec_shuffle_seed),
-                    buffer_size=spec_shuffle_buffer,
-                )
-            else:
-                dataset = dataset.shuffle(seed=int(spec_shuffle_seed))
-        if spec_skip_rows > 0:
-            if spec_streaming:
-                dataset = dataset.skip(spec_skip_rows)
-            else:
-                n = len(dataset)
-                start = min(spec_skip_rows, n)
-                dataset = dataset.select(range(start, n))
-        if spec_max_rows is not None:
-            n_take = int(spec_max_rows)
-            if spec_streaming:
-                dataset = dataset.take(n_take)
-            else:
-                dataset = dataset.select(range(min(n_take, len(dataset))))
+            # Optional column projection. NOTE: this does NOT push down to
+            # pyarrow's JSON parser — useful for normal datasets but does NOT
+            # rescue datasets with cross-shard schema drift (use
+            # loader_kind: jsonl_zst_hf instead). Kept for forward compat.
+            if spec_keep_columns:
+                dataset = dataset.select_columns(list(spec_keep_columns))
+
+            # Optional shuffle / skip / take. Used for large datasets where
+            # we cannot afford to materialize the full corpus in RAM. With
+            # matching `shuffle_seed` across two specs (train and test on the
+            # same source), `skip_rows` cleanly carves out a disjoint slice.
+            if spec_shuffle_seed is not None:
+                if spec_streaming:
+                    dataset = dataset.shuffle(
+                        seed=int(spec_shuffle_seed),
+                        buffer_size=spec_shuffle_buffer,
+                    )
+                else:
+                    dataset = dataset.shuffle(seed=int(spec_shuffle_seed))
+            if spec_skip_rows > 0:
+                if spec_streaming:
+                    dataset = dataset.skip(spec_skip_rows)
+                else:
+                    n = len(dataset)
+                    start = min(spec_skip_rows, n)
+                    dataset = dataset.select(range(start, n))
+            if spec_max_rows is not None:
+                n_take = int(spec_max_rows)
+                if spec_streaming:
+                    dataset = dataset.take(n_take)
+                else:
+                    dataset = dataset.select(range(min(n_take, len(dataset))))
+        else:
+            raise ValueError(
+                f"Unknown loader_kind={spec_loader_kind!r} for {hub_id}. "
+                "Supported: 'hf' (default, uses datasets.load_dataset), "
+                "'jsonl_zst_hf' (custom streaming reader for .jsonl.zst HF datasets)."
+            )
 
         all_texts = [_process_text_row(row, spec_text_field) for row in dataset]
 
