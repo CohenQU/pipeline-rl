@@ -119,6 +119,7 @@ train_dataset_names:
     - hub_id: allenai/dolma3_dolmino_mix-10B-1025
       split: train
       streaming: true
+      keep_columns: ["text"]   # dolma's metadata column has cross-shard schema drift; project early to avoid pyarrow JSON parse errors
       shuffle_seed: 42         # MUST match test spec so the streams agree
       shuffle_buffer_size: 10000
       max_rows: 500000
@@ -126,6 +127,7 @@ test_dataset_names:
     - hub_id: allenai/dolma3_dolmino_mix-10B-1025
       split: train
       streaming: true
+      keep_columns: ["text"]   # dolma's metadata column has cross-shard schema drift; project early to avoid pyarrow JSON parse errors
       shuffle_seed: 42         # same seed → same shuffled stream as train
       shuffle_buffer_size: 10000
       skip_rows: 500000        # take rows AFTER train's slice

@@ -188,6 +188,7 @@ def load_datasets(
             spec_shuffle_buffer = int(spec.get("shuffle_buffer_size", 10000))
             spec_skip_rows = int(spec.get("skip_rows", 0))
             spec_max_rows = spec.get("max_rows", None)
+            spec_keep_columns = spec.get("keep_columns", None)
         elif isinstance(spec, str) and "/" in spec:
             hub_id = spec
             config = None
@@ -200,6 +201,7 @@ def load_datasets(
             spec_shuffle_buffer = 10000
             spec_skip_rows = 0
             spec_max_rows = None
+            spec_keep_columns = None
         else:
             logger.warning(f"Unrecognized dataset spec, skipping: {spec!r}")
             continue
@@ -214,6 +216,15 @@ def load_datasets(
             streaming=spec_streaming,
         )
         dataset_label = hub_id.split("/")[-1] + (f"/{config}" if config else "") + f":{split}"
+
+        # Optional column projection. Push column selection into the streaming
+        # pipeline BEFORE shuffle/skip/take so that pyarrow's per-shard JSON
+        # parser only materializes the requested columns. Required for
+        # allenai/dolma3_dolmino_mix-10B-1025, whose `metadata` column has
+        # cross-shard schema drift (number vs boolean for the same nested
+        # field) that crashes pyarrow's JSON reader if it tries to parse it.
+        if spec_keep_columns:
+            dataset = dataset.select_columns(list(spec_keep_columns))
 
         # Optional shuffle / skip / take. Used for very large datasets like
         # allenai/dolma3_dolmino_mix-10B-1025 (10B tokens) where we cannot
