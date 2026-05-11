@@ -108,43 +108,52 @@
 - **Command**: `sbatch train/RL/bash/latent-thought-v00.09.sh`
 
 ## EXP-010: latent-thought-v01.03 (suffix-only on dolma) — smoke test for v01 series
-- **Date**: 2026-05-08 (running)
-- **Status**: running — Job ID **1607783** on fs-mbz-gpu-[088,113,121,127,220]
+- **Date**: 2026-05-09 (running, currently preempted)
+- **Status**: running (preempted+requeued under lowprio) — Job ID **1608990**
 - **Hypothesis**: HYP-001 (suffix-only kills copy-prefix hack on a more diverse dataset)
 - **Goal**: Replicate v00.03 (α=1, β=0) on `allenai/dolma3_dolmino_mix-10B-1025` to see how the suffix-only reward generalizes off wikitext. Also serves as the v01-series smoke test for the streaming dataset loader (DEC-006).
-- **Config**: `conf/latent-thought-v01.03.yaml` (dolma streaming, train rows [0,500K), test rows [500K,501K))
+- **Config**: `conf/latent-thought-v01.03.yaml` (dolma streaming via `loader_kind: jsonl_zst_hf`, train rows [0,500K), test rows [500K,501K))
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.03.sh`
-- **Job ID**: 1607796 (resubmitted after wandb project rename; 1607783 cancelled at 13 min so the new run logs to `latent-thought` instead of `AI-CSI`)
-- **Code snapshot**: branch `aicsi` at commit 21a22d4
+- **Job ID**: 1608990 (current). Prior IDs: 1607783 (cancelled for wandb rename), 1607796 (hung 13h on ERR-002), 1608463 (cancelled, false fix), 1608942 (hung again on ERR-002 — `select_columns` workaround was sampling-luck).
+- **Code snapshot**: branch `aicsi` at commit 988dc96 (custom jsonl_zst_hf loader)
 - **Output path**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/models/latent-thought-v01.03/`
-- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1607796.{out,err}`
-- **Notes**: First v01 run. Watch first 5–15 min for (a) ERR-001 recurrence (preprocess gate / Batch queue empty), and (b) streaming dataset prefetch latency (~30-60s expected before first rollout). After that watch wandb (project `latent-thought`, tag `latent_thought,dolma`) for `suffix_delta`, `aux_tokens`, `suffix_overlap_ratio`.
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1608990.{out,err}`
+- **Progress (before preemption)**: 1h 25m running, 33,160 actor train samples, 32 micro-batch steps, first checkpoint at step 25. Actor `error.log` 0 bytes (no ERR-002 recurrence). Wandb project `latent-thought`.
 
 ## EXP-011: latent-thought-v01.05 (50/50 hybrid on dolma)
-- **Date**: 2026-05-08 (queued)
-- **Status**: ready to submit
+- **Date**: 2026-05-09 (queued)
+- **Status**: PD on lowprio (Priority) — Job ID **1609112**
 - **Hypothesis**: HYP-003 + HYP-001 (hybrid behavior under domain shift)
 - **Config**: `conf/latent-thought-v01.05.yaml` (α=0.5, β=0.5, γ=0)
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.05.sh`
+- **Code snapshot**: branch `aicsi` at commit 988dc96
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1609112.{out,err}`
 
 ## EXP-012: latent-thought-v01.07 (suffix-only + γ=0.1 on dolma)
-- **Date**: 2026-05-08 (queued)
-- **Status**: ready to submit
+- **Date**: 2026-05-09 (queued)
+- **Status**: PD on lowprio (Priority) — Job ID **1609113**
 - **Hypothesis**: HYP-004 on dolma — small fluency regularizer on a more natural corpus.
 - **Config**: `conf/latent-thought-v01.07.yaml` (α=0.9, β=0, γ=0.1)
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.07.sh`
+- **Code snapshot**: branch `aicsi` at commit 988dc96
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1609113.{out,err}`
+- **Notes**: Output dir contains stale `wandb_info.json` from prior failed attempts (1607796 / 1608942). New run will resume into the existing wandb run id (no metrics so far) — harmless, will just append.
 
 ## EXP-013: latent-thought-v01.08 (γ=0.3 on dolma)
-- **Date**: 2026-05-08 (queued)
-- **Status**: ready to submit
+- **Date**: 2026-05-09 (queued)
+- **Status**: PD on lowprio (Priority) — Job ID **1609114**
 - **Hypothesis**: HYP-004
 - **Config**: `conf/latent-thought-v01.08.yaml` (α=0.7, β=0, γ=0.3)
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.08.sh`
+- **Code snapshot**: branch `aicsi` at commit 988dc96
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1609114.{out,err}`
 
 ## EXP-014: latent-thought-v01.09 (γ=0.5 on dolma)
-- **Date**: 2026-05-08 (queued)
-- **Status**: ready to submit
+- **Date**: 2026-05-09 (queued)
+- **Status**: PD on lowprio (Priority) — Job ID **1609115**
 - **Hypothesis**: HYP-004 (upper bound on dolma)
 - **Config**: `conf/latent-thought-v01.09.yaml` (α=0.5, β=0, γ=0.5)
 - **Command**: `sbatch train/RL/bash/latent-thought-v01.09.sh`
+- **Code snapshot**: branch `aicsi` at commit 988dc96
+- **Logs**: `/mnt/weka/home/wen.ye/workspace_m2/tmp/log/slurm/sft-1609115.{out,err}`
 

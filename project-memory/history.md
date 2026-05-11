@@ -93,3 +93,20 @@
 - **Artifacts produced**: DEC-006, EXP-010 through EXP-014.
 - **Open items**: User to decide whether to submit v00.x and/or v01.x jobs. Suggest submitting v01.03 first (suffix-only smoke run on dolma) to verify the streaming dataset works end-to-end, then queue the others.
 
+## 2026-05-09 Session 1 — debug + fix dolma loader, launch full v01 sweep
+- **Requests**: User submitted v01.03 (1607783, then 1607796 after wandb rename), then submitted v01.07 manually (1608942). All hung 13+h with empty actor `error.log` written but no progress. User asked to diagnose, fix, push, and resubmit.
+- **Actions / discussion notes**:
+  - Diagnosed: actor crashed at startup loading the dolma test dataset with `pyarrow.lib.ArrowInvalid: JSON parse error: Column(/metadata/google_gemma-3-12b-it_contains_pii/[]/[]) changed from number to boolean in row 0`. The bad shard is `science_tech_p050_shard_00000466.jsonl.zst`. Trainer waited indefinitely for actor data (no NCCL timeout because trainer hadn't even started training).
+  - First fix attempt: `keep_columns: ["text"]` via `dataset.select_columns`. A 2000-row offline test passed and convinced me it worked — but that was sampling luck (the bad shard wasn't in the first 2000). Reproducing the EXACT loader path (load → select_columns → shuffle → skip → take) at higher row counts hit the same ArrowInvalid. **Lesson**: HF's `select_columns` does NOT push down to pyarrow's JSON parser, so it cannot rescue datasets with cross-shard schema drift. Stress-test column-projection workarounds before believing them.
+  - Real fix: bypass HF + pyarrow entirely via custom `_stream_jsonl_zst_from_hub` loader — `HfFileSystem` enumerates `.jsonl.zst` shards, `zstandard.ZstdDecompressor().stream_reader` decompresses each, stdlib `json.loads` parses each line (per-row, tolerates schema drift). New `loader_kind: jsonl_zst_hf` per-spec option triggers this path; default `loader_kind: hf` preserves existing wikitext behavior. Verified offline: 50 train + 10 test rows from same `shuffle_seed` are perfectly disjoint.
+  - Side investigation: confirmed editable pipelinerl install points at imo-dev fork (which lacks `latent_thought` domain), but Python finds AI-Scientist's local `pipelinerl/` via cwd-in-sys.path during launch. So my edits to AI-Scientist DO get loaded. (Still a fragile setup worth fixing later.)
+  - Added `#SBATCH --qos=lowprio --partition=lowprio` to all 15 latent-thought launch scripts (only v01.07.sh had it before). Lowprio jobs are preemptible but get re-queued via `--requeue`; combined with `wandb_resume: always` and `save_checkpoint_steps: 25`, this is acceptable.
+  - Submitted v01.03 (1608990). Verified it ran cleanly: 33,160 actor samples, 32 micro-batch steps, ckpt at step 25 in 1h 25m before getting preempted (and re-queued). Actor `error.log` stayed empty.
+  - Submitted v01.05/07/08/09 (1609112/3/4/5). All PD on lowprio Priority.
+  - Bumped `save_checkpoint_steps` from 10 to 25 across all 14 active configs (v00.00 untouched).
+  - Renamed wandb project `AI-CSI` → `latent-thought` across all 15 latent-thought yamls. Cancelled the previous v01.03 (1607783) and resubmitted (1607796) so it would log to the renamed project.
+  - Pushed multiple commits to `git@github.com.q:CohenQU/pipeline-rl.git` aicsi: 21a22d4 (rename), 89af1eb (failed keep_columns "fix"), 7429c58 (memory), 988dc96 (real custom-loader fix).
+- **Outcome**: ERR-002 actually fixed. v01 sweep is in flight (5 jobs PD on lowprio), v01.03 already proven to train cleanly. v00 sweep partially complete; v00.04/06/07/08/09 never launched.
+- **Artifacts produced**: ERR-002 (rewritten with real fix + lessons learned), EXP-010..014 updated with new job IDs and progress.
+- **Open items**: Watch the 5 v01 jobs through their first checkpoints; compare suffix_delta / aux_delta / aux_tokens / suffix_overlap_ratio across (α, γ) settings on dolma. Eventually launch v00.04/06/07/08/09 too, OR decide v01 is the canonical sweep and skip them.
+
